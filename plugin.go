@@ -489,6 +489,8 @@ func handlerDeleteEndpoint(w http.ResponseWriter, r *http.Request) {
 func handlerJoin(w http.ResponseWriter, r *http.Request) {
 	resp := api.JoinResponse{}
 
+	glog.Infof("EE: Join")
+
 	body, err := getBody(r)
 	if err != nil {
 		resp.Err = "Error: " + err.Error()
@@ -513,14 +515,21 @@ func handlerJoin(w http.ResponseWriter, r *http.Request) {
 	driver.endpoints.Unlock()
 
         pf_link, _ := netlink.LinkByName(nw.Config.Iface)
+
+	glog.Infof("EE: pf_link: %s", pf_link)
+
         err = netlink.LinkSetVfVlan(pf_link, em.Config.Id, nw.Config.Vlanid)
 
         vf_path := pci_devices_path + em.Config.Bdf
+
+	glog.Infof("EE: vf_path:: %s", vf_path)
+
         vf_iface := vf_path + "/net"
         iface_info, _ := os.Open(vf_iface)
         iface_info_dir, err := iface_info.Readdir(0)
         if err == nil {
                 for _, value := range iface_info_dir {
+			glog.Infof("EE: value,name: %s", value.Name())
                         em.SrcName = value.Name()
                         glog.Infof("vfvlan - ep srcname %s", em.SrcName)
                 }
