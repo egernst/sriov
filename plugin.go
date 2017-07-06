@@ -23,84 +23,84 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
-	"net"
-	"net/http"
-	"sync"
-	"time"
-        "os"
-        "strconv"
-        "strings"
 	"github.com/01org/ciao/ssntp/uuid"
 	"github.com/boltdb/bolt"
 	"github.com/docker/libnetwork/drivers/remote/api"
 	ipamapi "github.com/docker/libnetwork/ipams/remote/api"
-	"github.com/gorilla/mux"
 	"github.com/golang/glog"
-        "github.com/vishvananda/netlink"
+	"github.com/gorilla/mux"
+	"github.com/vishvananda/netlink"
+	"io/ioutil"
+	"net"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 )
 
 type epVal struct {
-        Id        string
-        SrcName   string
-        Config    vfinfo
+	Id      string
+	SrcName string
+	Config  vfinfo
 }
 
 type vfinfo struct {
-        Bdf string
-        Id  int
+	Bdf string
+	Id  int
 }
 
 type nwVal struct {
-       Id       string
-       Config configuration
+	Id     string
+	Config configuration
 }
 
 type configuration struct {
-       Iface           string
-       Pf              string
-       Vlanid          int
-       Phys_network    string
+	Iface        string
+	Pf           string
+	Vlanid       int
+	Phys_network string
 }
 
 type epMap struct {
-        sync.Mutex
+	sync.Mutex
 	m map[string]*epVal
 }
 
 type pfMap struct {
-        sync.Mutex
-        m map[string][]vfinfo
+	sync.Mutex
+	m map[string][]vfinfo
 }
 type nwMap struct {
-        sync.Mutex
+	sync.Mutex
 	m map[string]*nwVal
 }
 
 var driver struct {
-    networks nwMap
-    endpoints epMap
-    pfs pfMap
+	networks  nwMap
+	endpoints epMap
+	pfs       pfMap
 }
 
 var dbFile string
 var db *bolt.DB
 
 const (
-      network_to_if_path = "/tmp/vfvlan/"
-      sys_class_net_path = "/sys/class/net/"
-      pci_devices_path = "/sys/bus/pci/devices/"
+	network_to_if_path = "/tmp/vfvlan/"
+	sys_class_net_path = "/sys/class/net/"
+	pci_devices_path   = "/sys/bus/pci/devices/"
 )
 
 func init() {
 	driver.networks = nwMap{}
-        driver.networks.m = make(map[string]*nwVal)
+	driver.networks.m = make(map[string]*nwVal)
 
-        driver.pfs = pfMap{}
-        driver.pfs.m = make(map[string][]vfinfo)
+	driver.pfs = pfMap{}
+	driver.pfs.m = make(map[string][]vfinfo)
 
-        driver.endpoints = epMap{}
-        driver.endpoints.m = make(map[string]*epVal)
+	driver.endpoints = epMap{}
+	driver.endpoints.m = make(map[string]*epVal)
 
 	dbFile = "/tmp/sriov-bolt.db"
 }
@@ -170,38 +170,37 @@ func handlerCreateNetwork(w http.ResponseWriter, r *http.Request) {
 
 	phys_network, ok := v["phys_network"].(string)
 
-        Iface, ok := v["pf_iface"].(string)
+	Iface, ok := v["pf_iface"].(string)
 
-        if (phys_network == "") && (Iface == "") {
-                resp.Err = "Error: network incorrect or unspecified. Please provide either name of interface connected to physical network (pf_iface) or name of physical network (phys_network)"
-                sendResponse(resp, w)
-                return
-        }
+	if (phys_network == "") && (Iface == "") {
+		resp.Err = "Error: network incorrect or unspecified. Please provide either name of interface connected to physical network (pf_iface) or name of physical network (phys_network)"
+		sendResponse(resp, w)
+		return
+	}
 
-        vlanid, ok := v["vlanid"].(string)
-        if !ok {
-                resp.Err = "Error: network incorrect or unspecified. Please provide vlan id for the virtual network (vlanid)"
-                sendResponse(resp, w)
-                return
-        }
+	vlanid, ok := v["vlanid"].(string)
+	if !ok {
+		resp.Err = "Error: network incorrect or unspecified. Please provide vlan id for the virtual network (vlanid)"
+		sendResponse(resp, w)
+		return
+	}
 
-        nw := &nwVal {
-             Id: req.NetworkID,
-             Config: configuration{},
-        }
+	nw := &nwVal{
+		Id:     req.NetworkID,
+		Config: configuration{},
+	}
 
-        nw.Config.Phys_network = phys_network
-        nw.Config.Vlanid, _ = strconv.Atoi(vlanid)
-        nw.Config.Iface = Iface
+	nw.Config.Phys_network = phys_network
+	nw.Config.Vlanid, _ = strconv.Atoi(vlanid)
+	nw.Config.Iface = Iface
 
-        err = SetupInterface(nw)
+	err = SetupInterface(nw)
 
-        if err != nil {
-                resp.Err = err.Error()
-                sendResponse(resp, w)
-                return
-        }
-
+	if err != nil {
+		resp.Err = err.Error()
+		sendResponse(resp, w)
+		return
+	}
 
 	driver.networks.Lock()
 	defer driver.networks.Unlock()
@@ -217,108 +216,108 @@ func handlerCreateNetwork(w http.ResponseWriter, r *http.Request) {
 	sendResponse(resp, w)
 }
 
-func SetupInterface (nw *nwVal) error {
-        if nw.Config.Phys_network != "" {
+func SetupInterface(nw *nwVal) error {
+	if nw.Config.Phys_network != "" {
 
-                map_path := network_to_if_path + nw.Config.Phys_network
-                glog.Infof("vfvlan - map path: %s", map_path)
+		map_path := network_to_if_path + nw.Config.Phys_network
+		glog.Infof("vfvlan - map path: %s", map_path)
 
-                map_file, err := os.Open(map_path)
-                if err != nil {
-                        glog.Errorf("vfvlan - Unable to open the opening physical network to iface mapping file %s", nw.Config.Phys_network)
-                        return fmt.Errorf("Error with mapping physical network to SR-IOv PF")
-                }
+		map_file, err := os.Open(map_path)
+		if err != nil {
+			glog.Errorf("vfvlan - Unable to open the opening physical network to iface mapping file %s", nw.Config.Phys_network)
+			return fmt.Errorf("Error with mapping physical network to SR-IOv PF")
+		}
 
-                scanner := bufio.NewScanner(map_file)
-                scanner.Scan()
-                nw.Config.Iface = scanner.Text()
-                glog.Infof("vfvlan - interface used for network %s - %s", nw.Id, nw.Config.Iface)
-        }
+		scanner := bufio.NewScanner(map_file)
+		scanner.Scan()
+		nw.Config.Iface = scanner.Text()
+		glog.Infof("vfvlan - interface used for network %s - %s", nw.Id, nw.Config.Iface)
+	}
 
-        if_device_path := sys_class_net_path + nw.Config.Iface + "/" + "device"
-        glog.Infof("vfvlan - iface device path for network %s - %s", nw.Id, if_device_path)
+	if_device_path := sys_class_net_path + nw.Config.Iface + "/" + "device"
+	glog.Infof("vfvlan - iface device path for network %s - %s", nw.Id, if_device_path)
 
-        device_info, err := os.Readlink(if_device_path)
-        if err != nil {
-                glog.Errorf("vfvlan - Unable to open the device path for iface %s", nw.Config.Iface)
-                return fmt.Errorf("Error with mapping physical network to SR-IOv PF")
-        }
+	device_info, err := os.Readlink(if_device_path)
+	if err != nil {
+		glog.Errorf("vfvlan - Unable to open the device path for iface %s", nw.Config.Iface)
+		return fmt.Errorf("Error with mapping physical network to SR-IOv PF")
+	}
 
-        substrings := strings.SplitN(device_info, "/", 4)
-        device_bdf := substrings[3]
+	substrings := strings.SplitN(device_info, "/", 4)
+	device_bdf := substrings[3]
 
-        nw.Config.Pf = device_bdf
-        glog.Infof("vfvlan - iface b.d.f for networks %s - %s", nw.Id, nw.Config.Pf)
+	nw.Config.Pf = device_bdf
+	glog.Infof("vfvlan - iface b.d.f for networks %s - %s", nw.Id, nw.Config.Pf)
 
-        driver.pfs.Lock()
+	driver.pfs.Lock()
 
-        _, ok := driver.pfs.m[nw.Config.Pf]
-        if (ok) {
-                glog.Infof("vfvlan - SR-IOv interface for network %s is already initialized", nw.Id)
-                driver.pfs.Unlock()
-                return nil
-        } else {
-                driver.pfs.m[nw.Config.Pf] = make([]vfinfo, 0)
-        }
+	_, ok := driver.pfs.m[nw.Config.Pf]
+	if ok {
+		glog.Infof("vfvlan - SR-IOv interface for network %s is already initialized", nw.Id)
+		driver.pfs.Unlock()
+		return nil
+	} else {
+		driver.pfs.m[nw.Config.Pf] = make([]vfinfo, 0)
+	}
 
-        err = initialize_pf(nw.Config.Pf)
-        driver.pfs.Unlock()
+	err = initialize_pf(nw.Config.Pf)
+	driver.pfs.Unlock()
 
-        if err != nil {
-                return fmt.Errorf("Error with initializing the underlying SR-IOv PF")
-        }
-        return nil
+	if err != nil {
+		return fmt.Errorf("Error with initializing the underlying SR-IOv PF")
+	}
+	return nil
 }
 
-func initialize_pf (pf string) error {
-        var totalvfs_path, numvfs_path, totalvfs string
+func initialize_pf(pf string) error {
+	var totalvfs_path, numvfs_path, totalvfs string
 
-        device_path := pci_devices_path + pf
+	device_path := pci_devices_path + pf
 
-        totalvfs_path = device_path + "/" + "sriov_totalvfs"
-        totalvfs_file, err := os.Open(totalvfs_path)
+	totalvfs_path = device_path + "/" + "sriov_totalvfs"
+	totalvfs_file, err := os.Open(totalvfs_path)
 
-        if err != nil {
-                glog.Errorf("Error opening the totalvfs filr on the PF");
-                return err
-        }
+	if err != nil {
+		glog.Errorf("Error opening the totalvfs filr on the PF")
+		return err
+	}
 
-        totalvfs_scanner := bufio.NewScanner(totalvfs_file)
-        totalvfs_scanner.Scan()
-        totalvfs = totalvfs_scanner.Text()
+	totalvfs_scanner := bufio.NewScanner(totalvfs_file)
+	totalvfs_scanner.Scan()
+	totalvfs = totalvfs_scanner.Text()
 
-        numvfs_path = device_path + "/" + "sriov_numvfs"
-        numvfs_file, err := os.Open(numvfs_path)
+	numvfs_path = device_path + "/" + "sriov_numvfs"
+	numvfs_file, err := os.Open(numvfs_path)
 
-        numvfs_scanner := bufio.NewScanner(numvfs_file)
-        numvfs_scanner.Scan()
-        numvfs := numvfs_scanner.Text()
+	numvfs_scanner := bufio.NewScanner(numvfs_file)
+	numvfs_scanner.Scan()
+	numvfs := numvfs_scanner.Text()
 
-        if strings.EqualFold (totalvfs, numvfs) == false {
-                glog.Errorf("Numvfs and Totalvfs are not same on the PF - Initialize numvfs to totalvfs")
-//                return fmt.Errorf("Error with initializing the underlying SR-IOv PF")
-        }
+	if strings.EqualFold(totalvfs, numvfs) == false {
+		glog.Errorf("Numvfs and Totalvfs are not same on the PF - Initialize numvfs to totalvfs")
+		//                return fmt.Errorf("Error with initializing the underlying SR-IOv PF")
+	}
 
-        device_info, err := os.Open(device_path)
-        device_info_files, err := device_info.Readdir(0)
-        if err == nil {
-                for _, value := range device_info_files {
-                        if strings.Contains(value.Name(), "virtfn") {
-                                link, _ := os.Readlink(device_path + "/" + value.Name())
-                                substrings := strings.SplitN(link, "/", 2)
-                                device_bdf := substrings[1]
-                                vf_id_str := strings.TrimPrefix(value.Name(), "virtfn")
-                                vf_id, _ := strconv.Atoi(vf_id_str)
-                                vf_info := vfinfo{
-                                        Bdf: device_bdf,
-                                        Id:  vf_id,
-                                }
-                                driver.pfs.m[pf] = append(driver.pfs.m[pf], vf_info)
-                                glog.Infof("vfvlan" + device_bdf)
-                        }
-                }
-        }
-        return nil
+	device_info, err := os.Open(device_path)
+	device_info_files, err := device_info.Readdir(0)
+	if err == nil {
+		for _, value := range device_info_files {
+			if strings.Contains(value.Name(), "virtfn") {
+				link, _ := os.Readlink(device_path + "/" + value.Name())
+				substrings := strings.SplitN(link, "/", 2)
+				device_bdf := substrings[1]
+				vf_id_str := strings.TrimPrefix(value.Name(), "virtfn")
+				vf_id, _ := strconv.Atoi(vf_id_str)
+				vf_info := vfinfo{
+					Bdf: device_bdf,
+					Id:  vf_id,
+				}
+				driver.pfs.m[pf] = append(driver.pfs.m[pf], vf_info)
+				glog.Infof("vfvlan" + device_bdf)
+			}
+		}
+	}
+	return nil
 
 }
 
@@ -407,13 +406,13 @@ func handlerCreateEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-        glog.Infof("IP from the docker default IPAM [%v]", ip.String())
+	glog.Infof("IP from the docker default IPAM [%v]", ip.String())
 
-        driver.networks.Lock()
-        nw := driver.networks.m[req.NetworkID]
-        driver.networks.Unlock()
+	driver.networks.Lock()
+	nw := driver.networks.m[req.NetworkID]
+	driver.networks.Unlock()
 
-        pf := nw.Config.Pf
+	pf := nw.Config.Pf
 
 	driver.endpoints.Lock()
 	defer driver.endpoints.Unlock()
@@ -421,21 +420,21 @@ func handlerCreateEndpoint(w http.ResponseWriter, r *http.Request) {
 	driver.pfs.Lock()
 	defer driver.pfs.Unlock()
 
-        ep := &epVal {
-                Id: req.EndpointID,
-        }
+	ep := &epVal{
+		Id: req.EndpointID,
+	}
 
-        glog.Infof("vfvlan - CreateEndpoint number of VFs available %d", len(driver.pfs.m[pf]))
+	glog.Infof("vfvlan - CreateEndpoint number of VFs available %d", len(driver.pfs.m[pf]))
 
-        if len(driver.pfs.m[pf]) == 0 {
-                glog.Infof("All the vfs on this interface are currently in use");
-                resp.Err = fmt.Sprintf("No VFs are available on the SR-IOv PF")
-                sendResponse(resp, w)
-                return
-        } else {
-                ep.Config = driver.pfs.m[pf][0]
-                driver.pfs.m[pf] = driver.pfs.m[pf][1:]
-        }
+	if len(driver.pfs.m[pf]) == 0 {
+		glog.Infof("All the vfs on this interface are currently in use")
+		resp.Err = fmt.Sprintf("No VFs are available on the SR-IOv PF")
+		sendResponse(resp, w)
+		return
+	} else {
+		ep.Config = driver.pfs.m[pf][0]
+		driver.pfs.m[pf] = driver.pfs.m[pf][1:]
+	}
 
 	driver.endpoints.m[req.EndpointID] = ep
 
@@ -464,23 +463,23 @@ func handlerDeleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	driver.endpoints.Lock()
-        driver.pfs.Lock()
-        nw := driver.networks.m[req.NetworkID]
-        pf := nw.Config.Pf
+	driver.pfs.Lock()
+	nw := driver.networks.m[req.NetworkID]
+	pf := nw.Config.Pf
 
-        ep := driver.endpoints.m[req.EndpointID]
-        driver.pfs.m[pf] = append(driver.pfs.m[pf], ep.Config)
+	ep := driver.endpoints.m[req.EndpointID]
+	driver.pfs.m[pf] = append(driver.pfs.m[pf], ep.Config)
 
-        pf_link, _ := netlink.LinkByName(nw.Config.Iface)
-        err = netlink.LinkSetVfVlan(pf_link, ep.Config.Id, 0)
+	pf_link, _ := netlink.LinkByName(nw.Config.Iface)
+	err = netlink.LinkSetVfVlan(pf_link, ep.Config.Id, 0)
 
-        glog.Infof("vfvlan - DeleteEndpoint number of VFs available %d", len(driver.pfs.m[pf]))
+	glog.Infof("vfvlan - DeleteEndpoint number of VFs available %d", len(driver.pfs.m[pf]))
 	delete(driver.endpoints.m, req.EndpointID)
 	if err := dbDelete("epMap", req.EndpointID); err != nil {
 		glog.Errorf("Unable to update db %v", err)
 	}
 	driver.endpoints.Unlock()
-        driver.pfs.Unlock()
+	driver.pfs.Unlock()
 	//Figure out how to a vpp tap delete
 
 	sendResponse(resp, w)
@@ -505,8 +504,8 @@ func handlerJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-        driver.networks.Lock()
-        driver.endpoints.Lock()
+	driver.networks.Lock()
+	driver.endpoints.Lock()
 
 	nw := driver.networks.m[req.NetworkID]
 	em := driver.endpoints.m[req.EndpointID]
@@ -514,28 +513,28 @@ func handlerJoin(w http.ResponseWriter, r *http.Request) {
 	driver.networks.Unlock()
 	driver.endpoints.Unlock()
 
-        pf_link, _ := netlink.LinkByName(nw.Config.Iface)
+	pf_link, _ := netlink.LinkByName(nw.Config.Iface)
 
 	glog.Infof("EE: pf_link: %s", pf_link)
 
-        err = netlink.LinkSetVfVlan(pf_link, em.Config.Id, nw.Config.Vlanid)
+	err = netlink.LinkSetVfVlan(pf_link, em.Config.Id, nw.Config.Vlanid)
 
-        vf_path := pci_devices_path + em.Config.Bdf
+	vf_path := pci_devices_path + em.Config.Bdf
 
 	glog.Infof("EE: vf_path:: %s", vf_path)
 
-        vf_iface := vf_path + "/net"
-        iface_info, _ := os.Open(vf_iface)
-        iface_info_dir, err := iface_info.Readdir(0)
-        if err == nil {
-                for _, value := range iface_info_dir {
+	vf_iface := vf_path + "/net"
+	iface_info, _ := os.Open(vf_iface)
+	iface_info_dir, err := iface_info.Readdir(0)
+	if err == nil {
+		for _, value := range iface_info_dir {
 			glog.Infof("EE: value,name: %s", value.Name())
-                        em.SrcName = value.Name()
-                        glog.Infof("vfvlan - ep srcname %s", em.SrcName)
-                }
-        }
+			em.SrcName = value.Name()
+			glog.Infof("vfvlan - ep srcname %s", em.SrcName)
+		}
+	}
 
-        resp.InterfaceName = &api.InterfaceName{
+	resp.InterfaceName = &api.InterfaceName{
 		SrcName:   em.SrcName,
 		DstPrefix: "eth",
 	}
@@ -925,7 +924,6 @@ func main() {
 	r.HandleFunc("/NetworkDriver.DiscoverDelete", handlerDiscoverDelete)
 	r.HandleFunc("/NetworkDriver.ProgramExternalConnectivity", handlerExternalConnectivity)
 	r.HandleFunc("/NetworkDriver.RevokeExternalConnectivity", handlerRevokeExternalConnectivity)
-
 
 	r.HandleFunc("/", handler)
 	err := http.ListenAndServe("127.0.0.1:9599", r)
