@@ -61,6 +61,8 @@ type configuration struct {
 	Pf           string
 	Vlanid       int
 	Phys_network string
+	// Hack for now: may want to create a slice of bdfs which we can use; maybe a class of devices?
+	Bdf string
 }
 
 type epMap struct {
@@ -178,6 +180,13 @@ func handlerCreateNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ifc_bdf, ok := v["ifc_bdf"].(string)
+	if ifc_bdf == "" {
+		resp.Err = "Error: specify interface BDF you'd like to pass to containers on this network"
+		sendResponse(resp, w)
+		return
+	}
+
 	vlanid, ok := v["vlanid"].(string)
 	if !ok {
 		resp.Err = "Error: network incorrect or unspecified. Please provide vlan id for the virtual network (vlanid)"
@@ -193,6 +202,7 @@ func handlerCreateNetwork(w http.ResponseWriter, r *http.Request) {
 	nw.Config.Phys_network = phys_network
 	nw.Config.Vlanid, _ = strconv.Atoi(vlanid)
 	nw.Config.Iface = Iface
+	nw.Config.Bdf = ifc_bdf
 
 	err = SetupInterface(nw)
 
@@ -513,15 +523,9 @@ func handlerJoin(w http.ResponseWriter, r *http.Request) {
 	driver.networks.Unlock()
 	driver.endpoints.Unlock()
 
-	pf_link, _ := netlink.LinkByName(nw.Config.Iface)
+	vf_path := pci_devices_path + nw.Config.Bdf
 
-	glog.Infof("EE: pf_link: %s", pf_link)
-
-	err = netlink.LinkSetVfVlan(pf_link, em.Config.Id, nw.Config.Vlanid)
-
-	vf_path := pci_devices_path + em.Config.Bdf
-
-	glog.Infof("EE: vf_path:: %s", vf_path)
+	glog.Infof("EE: vf_path: %s", vf_path)
 
 	vf_iface := vf_path + "/net"
 	iface_info, _ := os.Open(vf_iface)
